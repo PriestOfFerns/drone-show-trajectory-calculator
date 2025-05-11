@@ -15,7 +15,7 @@ class GeneticAlgorithm:
                  fitness_coefficients: Tuple[float, float, float, float], logging_parameters: Tuple[bool, bool, bool],
                  genome_count: int = 10000, breeding_pairs: int = 1000, hall_of_fame_size: int = 10,
                  mutation_chance: float = 0.005, mutation_change_chance: float = 0.9,
-                 mutation_add_chance: float = 0.1):
+                 mutation_add_chance: float = 0.1, use_cuda: bool = False):
         self.targets: List[np.ndarray] = targets
         self.start_bounding: Tuple[np.ndarray, np.ndarray] = start_bounding
         self.position_bounding: Tuple[np.ndarray, np.ndarray] = position_bounding
@@ -29,6 +29,7 @@ class GeneticAlgorithm:
         self.mutation_chance = mutation_chance
         self.mutation_change_chance = mutation_change_chance
         self.mutation_add_chance = mutation_add_chance
+        self.use_cuda = use_cuda
 
         self.droneGenomes: np.ndarray = None
         self.generate_random_genomes()
@@ -87,8 +88,13 @@ class GeneticAlgorithm:
         """
         fitness_genome_pairs: List[Tuple[float, DronePathGenome]] = []
         for genome in self.droneGenomes:
+            print("Doing a genome!")
             # Pass the required coefficients to the fitness method
-            fitness = genome.fitness(*self.fitness_coefficients)
+            if self.use_cuda:
+                fitness = genome.fitness_cupy(*self.fitness_coefficients)
+            else:
+                fitness = genome.fitness(*self.fitness_coefficients)
+
             fitness_genome_pairs.append((fitness, genome))
         return fitness_genome_pairs
 
@@ -153,7 +159,6 @@ class GeneticAlgorithm:
     def cycle(self):
         """Performs one generation (cycle) of the genetic algorithm."""
         fitness_pairs = self.calculate_fitness()
-
         # Get average fitness for logging purposes
         average_fitness = self.average_fitness(fitness_pairs)
         self.wandb_log["Average Fitness"] = average_fitness
@@ -252,7 +257,7 @@ if __name__ == "__main__":
     position_bounding_start = np.array([-500, -500, -500], dtype=float)
     position_bounding_end = np.array([-500, -500, -500], dtype=float)
 
-    targets = turn_csv_into_targets('../test_data/00.csv', 0.5, np.array([10, 10, 10]))
+    targets = list(turn_csv_into_targets('../test_data/00.csv', 0.5, np.array([10, 10, 10])))
 
     mutation_gauss = (run.config.mutation_gauss_mean, run.config.mutation_gauss_std)
     amount_gauss = (run.config.amount_gauss_mean, run.config.amount_gauss_std)
@@ -278,7 +283,8 @@ if __name__ == "__main__":
         genome_count=run.config.genome_count,
         breeding_pairs=run.config.breeding_pairs,
         hall_of_fame_size=run.config.hall_of_fame_size,
-        logging_parameters=(True, True, True)
+        logging_parameters=(True, True, True),
+        use_cuda=True
     )
 
     # Run the genetic algorithm
@@ -290,7 +296,7 @@ if __name__ == "__main__":
     for i, (fitness, genome) in enumerate(hall_of_fame_results):
         print(f"Rank {i + 1}: Fitness = {fitness:.2f}")
         # Optionally print more details about the best drone path, e.g.,
-        # print(f"  Genome: {genome}")
+        # print(f"  Genome: {genome}1")
         # For a more readable output, you might want to iterate through drone.waypoints:
         for j, drone_obj in enumerate(genome.drones):
             print(

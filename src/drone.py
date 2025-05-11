@@ -6,8 +6,29 @@ from warnings import warn
 import numpy as np
 import capsule  # Assuming 'capsule' is a custom module for capsule intersection
 
+from cuda_source import CUDA_KERNEL_SOURCE
+
 # Define a type alias for position vectors
 Position = np.ndarray
+
+try:
+    import cupy as cp
+
+    CUPY_AVAILABLE = True
+except ImportError:
+    CUPY_AVAILABLE = False
+    warn(
+        "CuPy not found. GPU acceleration will not be available. Falling back to NumPy where possible or raising errors.")
+
+
+    # Define a placeholder cp if not available to avoid NameError in type hints or annotations,
+    # but functions relying on it will check CUPY_AVAILABLE.
+    class CupyPlaceholder:
+        def __getattr__(self, name):
+            raise ImportError("CuPy is not installed or not found. GPU functionality is unavailable.")
+
+
+    cp = CupyPlaceholder()
 
 
 def random_pos_in_range(range_start: Position, range_end: Position, step: int = 1) -> Position:
@@ -47,6 +68,24 @@ class Drone:
     """
     Represents a drone with a path defined by waypoints.
     """
+
+    _intersection_kernel = None
+
+    @staticmethod
+    def _compile_kernel_if_needed():
+        """Compiles the CUDA kernel if it hasn't been already."""
+        if not CUPY_AVAILABLE:
+            # This method should not be called if CuPy is not available,
+            # but as a safeguard:
+            raise RuntimeError("CuPy is not available, cannot compile CUDA kernel.")
+        if Drone._intersection_kernel is None:
+            try:
+                Drone._intersection_kernel = cp.RawKernel(CUDA_KERNEL_SOURCE, "count_intersections_kernel")
+                # print("CUDA Kernel for capsule intersection compiled successfully.") # Optional: for debugging
+            except Exception as e:
+                warn(f"Failed to compile CUDA kernel: {e}")
+                # print(f"CUDA Kernel source that failed to compile:\n{CUDA_KERNEL_SOURCE}") # Optional: for debugging
+                raise
 
     def __init__(self, start_pos: Position, end_pos: Position, radius: float = 0.5,
                  mutation_gauss: Optional[Tuple[float, float]] = None, waypoints: Optional[List[Position]] = None):
@@ -118,6 +157,101 @@ class Drone:
                         collision_count += 1
         return collision_count
 
+    def get_intersecting_count_cupy(self, drones: List["Drone"]) -> int:
+        """
+        Calculates intersections using a CuPy kernel.
+        """
+        if not CUPY_AVAILABLE:
+            warn("CuPy not available. Cannot use get_intersecting_count_cupy.")
+            # Fallback or error
+            # return self.get_intersecting_count(drones) # Example fallback
+            return 0  # Or raise an error indicating GPU functionality is unavailable.
+
+        Drone._compile_kernel_if_needed()  # Ensure kernel is compiled
+        if Drone._intersection_kernel is None:
+            warn("CUDA kernel for intersection counting is not compiled. Returning 0.")
+            return 0
+
+        self_capsule_data_np, num_self_capsules = self.get_colliders_data_for_gpu()
+
+        if num_self_capsules == 0:
+            return 0
+
+        # Aggregate capsule data from all other drones
+        all_other_capsules_list_np = []
+        total_other_capsules = 0
+        for other_drone in drones:
+            if other_drone is self:
+                continue
+            other_drone_data_np, num_other = other_drone.get_colliders_data_for_gpu()
+            if num_other > 0:
+                all_other_capsules_list_np.append(other_drone_data_np)
+                total_other_capsules += num_other
+
+        if total_other_capsules == 0:
+            return 0
+
+        # Transfer data to GPU
+        self_capsules_gpu = cp.asarray(self_capsule_data_np)
+
+        if all_other_capsules_list_np:
+            other_capsules_flat_np = np.concatenate(all_other_capsules_list_np)
+            other_capsules_gpu = cp.asarray(other_capsules_flat_np)
+        else:  # Should not happen if total_other_capsules > 0, but as a safe guard
+            other_capsules_gpu = cp.array([], dtype=cp.float32)
+
+        # Output array for collision counts on GPU, initialized to 0
+        collision_count_gpu = cp.zeros(1, dtype=cp.uint32)
+
+        # Kernel launch parameters
+        threads_per_block = 256  # Typical value, can be tuned
+        # Grid dimensions: 1D grid, number of blocks needed to cover all self_capsules
+        blocks_per_grid = (num_self_capsules + threads_per_block - 1) // threads_per_block
+
+        # Launch the kernel
+        Drone._intersection_kernel(
+            (blocks_per_grid,), (threads_per_block,),
+            (self_capsules_gpu, num_self_capsules,
+             other_capsules_gpu, total_other_capsules,
+             collision_count_gpu)
+        )
+
+        cp.cuda.runtime.deviceSynchronize()  # Wait for kernel to finish
+
+        # Retrieve result from GPU
+        total_collisions = int(collision_count_gpu.get()[0])
+        return total_collisions
+
+    def get_colliders_data_for_gpu(self) -> Tuple[np.ndarray, int]:
+        """
+        Prepares capsule data as a flat NumPy array for GPU transfer.
+        Format: [p1x, p1y, p1z, p2x, p2y, p2z, r, p1x, p1y, p1z, ...]
+        Returns:
+            A NumPy array containing the capsule data.
+            An integer representing the number of capsules.
+        """
+        if not self.waypoints:
+            path_points = [self.start, self.end]
+        else:
+            path_points = [self.start] + self.waypoints + [self.end]
+
+        if len(path_points) < 2:
+            return np.array([], dtype=np.float32), 0
+
+        num_capsules = len(path_points) - 1
+        # Each capsule is 2 points (3 coords each) + 1 radius = 7 floats
+        capsule_data_np = np.zeros(num_capsules * 7, dtype=np.float32)
+
+        for i in range(num_capsules):
+            p1 = path_points[i]
+            p2 = path_points[i + 1]
+            offset = i * 7
+            capsule_data_np[offset:offset + 3] = p1
+            capsule_data_np[offset + 3:offset + 6] = p2
+            capsule_data_np[offset + 6] = self.radius
+
+        return capsule_data_np, num_capsules
+
     def randomize_waypoint(self, waypoint_index: int):
         """
         Randomly adjusts a specific waypoint or the start/end point using a Gaussian distribution.
@@ -157,7 +291,7 @@ class Drone:
             # Get origin point for new waypoint
             origin = self.start
             if self.waypoints:
-                origin = self.waypoints[insert_index-1]
+                origin = self.waypoints[insert_index - 1]
 
             # Initialize new waypoint at a position based on its neighbors or a default
             self.waypoints.insert(insert_index, origin)
@@ -168,6 +302,28 @@ class Drone:
             if self.waypoints:
                 remove_index = randint(0, len(self.waypoints) - 1)
                 self.waypoints.pop(remove_index)
+
+    def distance_cupy(self) -> float:
+        """Calculates the total distance of the drone's path using CuPy."""
+        if not CUPY_AVAILABLE:
+            warn("CuPy not available for distance_cupy. Falling back to NumPy version.")
+            return self.distance()
+
+        if not self.waypoints:
+            path_points_list = [self.start, self.end]
+        else:
+            path_points_list = [self.start] + self.waypoints + [self.end]
+
+        if len(path_points_list) < 2:
+            return 0.0
+
+        path_points_np = np.vstack(path_points_list).astype(np.float32)
+        path_points_gpu = cp.asarray(path_points_np)
+
+        deltas = cp.diff(path_points_gpu, axis=0)
+        segment_lengths = cp.linalg.norm(deltas, axis=1)
+        total_distance_gpu = cp.sum(segment_lengths)
+        return float(total_distance_gpu.get())
 
     def __repr__(self) -> str:
         """
@@ -180,7 +336,8 @@ class Drone:
 
 
 def random_drone(end_pos: Position, bounding_start: Position, bounding_end: Position,
-                 amount_gauss: Tuple[float, float], position_gauss: Tuple[float, float], mutation_gauss: Tuple[float, float] = None) -> Drone:
+                 amount_gauss: Tuple[float, float], position_gauss: Tuple[float, float],
+                 mutation_gauss: Tuple[float, float] = None) -> Drone:
     """
     Generates a random Drone with a path.
 
@@ -266,6 +423,21 @@ class DronePathGenome:
 
         return resulting_fitness
 
+    def fitness_cupy(self, distance_coefficient: float, waypoint_coefficient: float,
+                     drone_collision_coefficient: float, target_collision_coefficient: float) -> float:
+        if not CUPY_AVAILABLE:
+            warn("CuPy not available for fitness_cupy. Falling back to CPU fitness calculation.")
+            return self.fitness(distance_coefficient, waypoint_coefficient,
+                                drone_collision_coefficient, target_collision_coefficient)
+        resulting_fitness = 0.0
+        for i, drone in enumerate(self.drones):
+            dist = drone.distance_cupy()
+            resulting_fitness -= distance_coefficient * dist
+            resulting_fitness -= waypoint_coefficient * len(drone.waypoints)
+            num_intersections = drone.get_intersecting_count_cupy(self.drones)
+            resulting_fitness -= drone_collision_coefficient * num_intersections
+        return resulting_fitness
+
     def cross(self, other: "DronePathGenome") -> "DronePathGenome":
         """
         Performs a crossover operation with another genome to create a new genome.
@@ -312,7 +484,8 @@ class DronePathGenome:
 
 def random_drone_path_genome(bounding_start: Position, bounding_end: Position, targets: List[Position],
                              amount_gauss: Tuple[float, float], position_gauss: Tuple[float, float],
-                             mutation_chance: float = None, mutation_gauss: Tuple[float, float] = None) -> DronePathGenome:
+                             mutation_chance: float = None,
+                             mutation_gauss: Tuple[float, float] = None) -> DronePathGenome:
     """
     Generates a random DronePathGenome with drones targeting the specified positions.
 
@@ -329,9 +502,10 @@ def random_drone_path_genome(bounding_start: Position, bounding_end: Position, t
         A randomly generated DronePathGenome.
     """
     # Create a list of random drones, one for each target
-    drones = [random_drone(target, bounding_start, bounding_end, amount_gauss, position_gauss, mutation_gauss) for target in targets]
+    drones = [random_drone(target, bounding_start, bounding_end, amount_gauss, position_gauss, mutation_gauss) for
+              target in targets]
 
-    return DronePathGenome(targets=targets, mutation_chance=mutation_chance,  drones=drones)
+    return DronePathGenome(targets=targets, mutation_chance=mutation_chance, drones=drones)
 
 # #  # Example Usage (uncomment to run)
 # if __name__ == "__main__":
