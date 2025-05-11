@@ -6,20 +6,19 @@ import wandb
 from typing import List, Tuple
 from drone import DronePathGenome
 from time import perf_counter
-
+from target_parser import turn_csv_into_targets
 
 class GeneticAlgorithm:
     def __init__(self, targets: List[np.ndarray], start_bounding: Tuple[np.ndarray, np.ndarray],
-                 position_bounding: Tuple[float, float], mutation_gauss: Tuple[float, float],
+                 position_bounding: Tuple[np.ndarray, np.ndarray], mutation_gauss: Tuple[float, float],
                  amount_gauss: Tuple[float, float], position_gauss: Tuple[float, float],
                  fitness_coefficients: Tuple[float, float, float, float], logging_parameters: Tuple[bool, bool, bool],
                  genome_count: int = 10000, breeding_pairs: int = 1000, hall_of_fame_size: int = 10,
-                 mutation_chance: float = 0.01, mutation_change_chance: float = 0.9,
+                 mutation_chance: float = 0.005, mutation_change_chance: float = 0.9,
                  mutation_add_chance: float = 0.1):
         self.targets: List[np.ndarray] = targets
         self.start_bounding: Tuple[np.ndarray, np.ndarray] = start_bounding
-        self.position_bounding: Tuple[
-            float, float] = position_bounding  # This parameter seems unused in the current code
+        self.position_bounding: Tuple[np.ndarray, np.ndarray] = position_bounding
         self.mutation_gauss: Tuple[float, float] = mutation_gauss
         self.amount_gauss: Tuple[float, float] = amount_gauss
         self.position_gauss: Tuple[float, float] = position_gauss
@@ -214,6 +213,13 @@ class GeneticAlgorithm:
             last_time = perf_counter()
         return self.hall_of_fame
 
+    def bind_positions(self):
+        for genome in self.droneGenomes:
+            for drone in genome.drones:
+                drone.start.clip(*self.start_bounding)
+                for waypoint in drone.waypoints:
+                    waypoint.clip(*self.position_bounding)
+
 
 if __name__ == "__main__":
     wandb.login()
@@ -240,11 +246,13 @@ if __name__ == "__main__":
     )
 
     # Define parameters for the GeneticAlgorithm
-    bounding_start = np.array([0.0, 0.0, 0.0], dtype=float)
-    bounding_end = np.array([50.0, 50.0, 50.0], dtype=float)
-    targets = [np.array([10.0, 10.0, 10.0], dtype=float),
-               np.array([25.0, 25.0, 25.0], dtype=float),
-               np.array([40.0, 40.0, 40.0], dtype=float)]
+    start_bounding_start = np.array([0.0, 0.0, 0.0], dtype=float)
+    start_bounding_end = np.array([50.0, 50.0, 50.0], dtype=float)
+
+    position_bounding_start = np.array([-500, -500, -500], dtype=float)
+    position_bounding_end = np.array([-500, -500, -500], dtype=float)
+
+    targets = turn_csv_into_targets('../test_data/00.csv', 0.5, np.array([10, 10, 10]))
 
     mutation_gauss = (run.config.mutation_gauss_mean, run.config.mutation_gauss_std)
     amount_gauss = (run.config.amount_gauss_mean, run.config.amount_gauss_std)
@@ -260,8 +268,8 @@ if __name__ == "__main__":
     # Create an instance of the GeneticAlgorithm
     ga = GeneticAlgorithm(
         targets=targets,
-        start_bounding=(bounding_start, bounding_end),
-        position_bounding=(0.0, 0.0),
+        start_bounding=(start_bounding_start, start_bounding_end),
+        position_bounding=(position_bounding_start, position_bounding_end),
         # This seems unused in the current `random_drone_path_genome` and `GeneticAlgorithm`
         mutation_gauss=mutation_gauss,
         amount_gauss=amount_gauss,
