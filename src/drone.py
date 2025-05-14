@@ -4,7 +4,7 @@ from typing import List, Tuple, Optional
 from warnings import warn
 
 import numpy as np
-import capsule  # Assuming 'capsule' is a custom module for capsule intersection
+import capsule
 
 from cuda_source import CUDA_KERNEL_SOURCE
 

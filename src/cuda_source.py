@@ -1,5 +1,4 @@
 CUDA_KERNEL_SOURCE = """
-#include <math.h> // For sqrtf, fmaxf, fminf, fabsf
 
 extern "C" {
 

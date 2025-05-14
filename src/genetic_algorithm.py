@@ -87,8 +87,8 @@ class GeneticAlgorithm:
             A list of tuples, where each tuple contains (fitness_score, genome_object).
         """
         fitness_genome_pairs: List[Tuple[float, DronePathGenome]] = []
-        for genome in self.droneGenomes:
-            print("Doing a genome!")
+        for (i, genome) in enumerate(self.droneGenomes):
+            print(f"{i}/{len(self.droneGenomes)} genomes")
             # Pass the required coefficients to the fitness method
             if self.use_cuda:
                 fitness = genome.fitness_cupy(*self.fitness_coefficients)
