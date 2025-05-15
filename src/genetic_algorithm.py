@@ -8,6 +8,7 @@ from drone import DronePathGenome
 from time import perf_counter
 from target_parser import turn_csv_into_targets
 
+
 class GeneticAlgorithm:
     def __init__(self, targets: List[np.ndarray], start_bounding: Tuple[np.ndarray, np.ndarray],
                  position_bounding: Tuple[np.ndarray, np.ndarray], mutation_gauss: Tuple[float, float],
@@ -88,7 +89,6 @@ class GeneticAlgorithm:
         """
         fitness_genome_pairs: List[Tuple[float, DronePathGenome]] = []
         for (i, genome) in enumerate(self.droneGenomes):
-            print(f"{i}/{len(self.droneGenomes)} genomes")
             # Pass the required coefficients to the fitness method
             if self.use_cuda:
                 fitness = genome.fitness_cupy(*self.fitness_coefficients)
@@ -226,16 +226,31 @@ class GeneticAlgorithm:
                     waypoint.clip(*self.position_bounding)
 
 
+def save_to_jsons(to_save_genomes: List["DronePathGenome"], origin_path: str):
+    for i, genome in enumerate(to_save_genomes):
+        genome.save_to_JSON(origin_path + f"_{i}.json")
+
+
 if __name__ == "__main__":
     wandb.login()
+
+    # Define parameters for the GeneticAlgorithm
+    start_bounding_start = np.array([0.0, 0.0, 0.0], dtype=float)
+    start_bounding_end = np.array([50.0, 50.0, 50.0], dtype=float)
+
+    position_bounding_start = np.array([-500, -500, -500], dtype=float)
+    position_bounding_end = np.array([-500, -500, -500], dtype=float)
+
+    targets = list(turn_csv_into_targets('../test_data/00.csv', 0.5, np.array([10, 10, 10])))
 
     # Initialize wandb run
     run = wandb.init(
         project="drone-path-optimization",  # Specify your project name
         config={
-            "genome_count": 1000,
-            "breeding_pairs": 10,
-            "epochs": 50,
+            "target_count": len(targets),
+            "genome_count": 100,
+            "breeding_pairs": 5,
+            "epochs": 500,
             "hall_of_fame_size": 5,
             "distance_coefficient": 1.0,
             "waypoint_coefficient": 1.5,
@@ -249,15 +264,6 @@ if __name__ == "__main__":
             "position_gauss_std": 5,
         }
     )
-
-    # Define parameters for the GeneticAlgorithm
-    start_bounding_start = np.array([0.0, 0.0, 0.0], dtype=float)
-    start_bounding_end = np.array([50.0, 50.0, 50.0], dtype=float)
-
-    position_bounding_start = np.array([-500, -500, -500], dtype=float)
-    position_bounding_end = np.array([-500, -500, -500], dtype=float)
-
-    targets = list(turn_csv_into_targets('../test_data/00.csv', 0.5, np.array([10, 10, 10])))
 
     mutation_gauss = (run.config.mutation_gauss_mean, run.config.mutation_gauss_std)
     amount_gauss = (run.config.amount_gauss_mean, run.config.amount_gauss_std)
@@ -290,6 +296,12 @@ if __name__ == "__main__":
     # Run the genetic algorithm
     print("\nStarting Genetic Algorithm run...")
     hall_of_fame_results = ga.run(epochs=run.config.epochs)
+
+    hall_of_fame_drones = []
+    for result in hall_of_fame_results:
+        hall_of_fame_drones.append(result[1])
+
+    save_to_jsons(hall_of_fame_drones,f"../resulting_drones/{wandb.run.name}")
 
     print("\nGenetic Algorithm finished.")
     print("\nHall of Fame:")

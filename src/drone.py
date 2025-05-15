@@ -5,6 +5,7 @@ from warnings import warn
 
 import numpy as np
 import capsule
+import json
 
 from cuda_source import CUDA_KERNEL_SOURCE
 
@@ -480,6 +481,27 @@ class DronePathGenome:
 
     def __eq__(self, other: ["DronePathGenome"]):
         return self.drones == other.drones
+
+    def save_to_JSON(self, file_path: str):
+        resulting_dict = {}
+        tuple_targets = []
+        tuple_drones = []
+
+        for target in self.targets:
+            tuple_targets.append(tuple(target))
+        resulting_dict["targets"] = tuple_targets
+
+        for drone in self.drones:
+            tuple_waypoints = [tuple(drone.start)]
+            for waypoint in drone.waypoints:
+                tuple_waypoints.append(tuple(waypoint))
+            tuple_waypoints.append(tuple(drone.end))
+
+            tuple_drones.append(tuple_waypoints)
+        resulting_dict["drones"] = tuple_drones
+
+        return json.dump(resulting_dict, open(file_path,'w'))
+
 
 
 def random_drone_path_genome(bounding_start: Position, bounding_end: Position, targets: List[Position],
